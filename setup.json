@@ -4,14 +4,14 @@
     "PyGeometry-z6",
     "carnivalmirror==0.6.2",
     "duckietown-world-daffy",
-    "gym>=0.17.1",
+    "gymnasium>=1.2.1",
     "numpy>=1.10.0",
     "opencv-python>=3.4",
     "pyglet",
     "pyyaml>=3.11",
     "pyzmq>=16.0.0",
     "typing-extensions",
-    "zuper-commons-z6"
+    "zuper-commons-z6>=6.2.3"
   ],
   "tests_require": [],
   "srcdir": "src",
