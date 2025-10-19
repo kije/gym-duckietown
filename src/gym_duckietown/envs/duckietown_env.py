@@ -34,7 +34,11 @@ class DuckietownEnv(Simulator):
         self.limit = limit
 
     def step(self, action):
+        # Ensure vel and angle are scalars, not numpy arrays
+        # This handles cases where action might be [np.array([v]), np.array([a])]
         vel, angle = action
+        vel = float(np.asarray(vel).flat[0])
+        angle = float(np.asarray(angle).flat[0])
 
         # Distance between the wheels
         baseline = self.unwrapped.wheel_dist

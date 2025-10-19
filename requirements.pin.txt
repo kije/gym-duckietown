@@ -1,6 +1,6 @@
 pyglet>=2.0.0
 gymnasium>=1.2.1
-numpy>=1.21.0
+numpy>=1.21.0,<1.24.0,<2.0
 
 pyzmq>=16.0.0
 opencv-python
@@ -8,3 +8,4 @@ pyyaml>=3.11
 
 carnivalmirror==0.6.2
 pipdeptree
+scipy<1.16

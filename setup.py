@@ -25,7 +25,8 @@ line = "daffy"
 
 install_requires = [
     "gymnasium>=1.2.1",
-    "numpy>=1.21.0",
+    "numpy>=1.21.0,<1.24.0,<2.0",  # duckietown_world requires NumPy 1.x
+    "scipy<1.16",
     "pyglet>=2.0.0",
     "pyzmq>=16.0.0",
     "opencv-python>=3.4",

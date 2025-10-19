@@ -2159,7 +2159,8 @@ def _update_pos(self, action):
     returns pos, angle
     """
 
-    action = DynamicsInfo(motor_left=action[0], motor_right=action[1])
+    # Convert to plain Python floats to avoid numpy scalar contamination in dynamics
+    action = DynamicsInfo(motor_left=float(action[0]), motor_right=float(action[1]))
     self.state = self.state.integrate(self.delta_time, action)
     q = self.state.TSE2_from_state()[0]
     pos, angle = self.weird_from_cartesian(q)
