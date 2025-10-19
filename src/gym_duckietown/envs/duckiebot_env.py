@@ -6,13 +6,13 @@ import math
 import sys
 
 import cv2
-import gym
+import gymnasium as gym
 import numpy
 import numpy as np
 import pyglet
 import zmq
-from gym import spaces
-from gym.utils import seeding
+from gymnasium import spaces
+from gymnasium.utils import seeding
 from pyglet import gl
 
 if sys.version_info > (3,):
