@@ -4,7 +4,8 @@ from typing import Dict, Tuple
 
 import numpy as np
 from pyglet import gl
-from pyglet.gl import gluNewQuadric, gluSphere
+#from pyglet.gl import gluNewQuadric, gluSphere
+import pyglet.graphics
 
 from duckietown_world import MapFormat1Constants
 from duckietown_world.resources import get_resource_path
@@ -19,6 +20,83 @@ from .collision import (
 from .graphics import load_texture, rotate_point
 from .objmesh import ObjMesh
 
+
+def create_sphere(radius, sectors, stacks):
+    """
+    Generate vertices and indices for a sphere.
+
+    Args:
+        radius: sphere radius
+        sectors: number of longitude divisions
+        stacks: number of latitude divisions
+
+    Returns:
+        vertices, normals, indices for the sphere
+    """
+    vertices = []
+    normals = []
+    texcoords = []
+
+    sector_step = 2 * math.pi / sectors
+    stack_step = math.pi / stacks
+
+    # Generate vertices
+    for i in range(stacks + 1):
+        stack_angle = math.pi / 2 - i * stack_step  # from pi/2 to -pi/2
+        xy = radius * math.cos(stack_angle)  # radius at current stack
+        z = radius * math.sin(stack_angle)
+
+        for j in range(sectors + 1):
+            sector_angle = j * sector_step  # from 0 to 2pi
+
+            # Vertex position
+            x = xy * math.cos(sector_angle)
+            y = xy * math.sin(sector_angle)
+            vertices.extend([x, y, z])
+
+            # Normalized normal (for unit sphere, normal = position)
+            nx = x / radius
+            ny = y / radius
+            nz = z / radius
+            normals.extend([nx, ny, nz])
+
+            # Texture coordinates
+            s = j / sectors
+            t = i / stacks
+            texcoords.extend([s, t])
+
+    # Generate indices for triangles
+    indices = []
+    for i in range(stacks):
+        k1 = i * (sectors + 1)
+        k2 = k1 + sectors + 1
+
+        for j in range(sectors):
+            if i != 0:
+                indices.extend([k1, k2, k1 + 1])
+            if i != (stacks - 1):
+                indices.extend([k1 + 1, k2, k2 + 1])
+
+            k1 += 1
+            k2 += 1
+
+    return vertices, normals, texcoords, indices
+
+
+def draw_sphere(radius, sectors=20, stacks=20):
+    """Draw a sphere using modern OpenGL vertex arrays."""
+    vertices, normals, texcoords, indices = create_sphere(radius, sectors, stacks)
+
+    # Create vertex list
+    vertex_list = pyglet.graphics.vertex_list_indexed(
+        len(vertices) // 3,
+        indices,
+        ('v3f', vertices),
+        ('n3f', normals),
+        ('t2f', texcoords)
+    )
+
+    vertex_list.draw(gl.GL_TRIANGLES)
 
 class WorldObj:
     visible: bool
@@ -102,16 +180,18 @@ class WorldObj:
                 # gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
                 gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE)
 
-                sphere = gluNewQuadric()
+                #sphere = gluNewQuadric()
 
                 gl.glColor4f(color[0], color[1], color[2], 1.0)
-                gluSphere(sphere, s_main, 10, 10)
+                #gluSphere(sphere, s_main, 10, 10)
+                draw_sphere(s_main, 10, 10)
 
                 gl.glColor4f(color[0], color[1], color[2], 0.2)
 
                 s_halo_effective = color_intensity * s_halo
 
-                gluSphere(sphere, s_halo_effective, 10, 10)
+                #gluSphere(sphere, s_halo_effective, 10, 10)
+                draw_sphere(s_halo_effective, 10, 10)
 
                 gl.glColor4f(1.0, 1.0, 1.0, 1.0)
                 gl.glBlendFunc(gl.GL_ONE, gl.GL_ZERO)
