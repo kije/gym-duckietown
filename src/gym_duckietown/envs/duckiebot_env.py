@@ -68,7 +68,7 @@ class DuckiebotEnv(gym.Env):
 
         # For displaying text
 
-        self.textLabel = pyglet.text.Label(font_name="Arial", font_size=14, x=5, y=WINDOW_HEIGHT - 19)
+        self.textLabel = pyglet.text.Label("", font_name="Arial", font_size=14, x=5, y=WINDOW_HEIGHT - 19)
 
         # Connect to the Gym bridge ROS node
         addr_str = "tcp://%s:%s" % (serverAddr, serverPort)

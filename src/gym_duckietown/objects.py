@@ -19,6 +19,8 @@ from .collision import (
 )
 from .graphics import load_texture, rotate_point
 from .objmesh import ObjMesh
+from .shaders import set_uniform_matrix4, set_uniform_vector3, set_uniform_bool
+from .matrix_stack import get_mvp
 
 
 def create_sphere(radius, sectors, stacks):
@@ -65,6 +67,9 @@ def create_sphere(radius, sectors, stacks):
             t = i / stacks
             texcoords.extend([s, t])
 
+    # Add white color for all vertices
+    colors = [1.0, 1.0, 1.0, 1.0] * ((stacks + 1) * (sectors + 1))  # RGBA white
+
     # Generate indices for triangles
     indices = []
     for i in range(stacks):
@@ -80,23 +85,79 @@ def create_sphere(radius, sectors, stacks):
             k1 += 1
             k2 += 1
 
-    return vertices, normals, texcoords, indices
+    return vertices, normals, texcoords, indices, colors
 
 
-def draw_sphere(radius, sectors=20, stacks=20):
-    """Draw a sphere using modern OpenGL vertex arrays."""
-    vertices, normals, texcoords, indices = create_sphere(radius, sectors, stacks)
+class SphereCache:
+    """Cache for sphere meshes to avoid regenerating geometry every frame."""
 
-    # Create vertex list
-    vertex_list = pyglet.graphics.vertex_list_indexed(
-        len(vertices) // 3,
-        indices,
-        ('v3f', vertices),
-        ('n3f', normals),
-        ('t2f', texcoords)
-    )
+    def __init__(self):
+        self.spheres = {}  # key: (shader_id, radius, sectors, stacks) -> vertex_list
+        self.geometry_cache = {}  # key: (radius, sectors, stacks) -> (vertices, normals, texcoords, indices)
 
-    vertex_list.draw(gl.GL_TRIANGLES)
+    def get_sphere(self, shader_program, radius, sectors=20, stacks=20):
+        """
+        Get or create a sphere vertex list for the given shader program.
+
+        Args:
+            shader_program: The ShaderProgram to create the vertex list with
+            radius: Sphere radius
+            sectors: Number of longitude divisions
+            stacks: Number of latitude divisions
+
+        Returns:
+            VertexList for the sphere
+        """
+        if shader_program is None:
+            return None
+
+        # Use shader program ID for cache key (different shaders may have different attributes)
+        shader_id = id(shader_program)
+        cache_key = (shader_id, radius, sectors, stacks)
+
+        if cache_key not in self.spheres:
+            # Check if we have the geometry cached
+            geom_key = (radius, sectors, stacks)
+            if geom_key not in self.geometry_cache:
+                self.geometry_cache[geom_key] = create_sphere(radius, sectors, stacks)
+
+            vertices, normals, texcoords, indices, colors = self.geometry_cache[geom_key]
+
+            # Create vertex list using Pyglet 2.0+ API
+            vertex_list = shader_program.vertex_list_indexed(
+                len(vertices) // 3,
+                gl.GL_TRIANGLES,
+                indices,
+                position=('f', vertices),
+                normals=('f', normals),
+                tex_coords=('f', texcoords),
+                colors=('f', colors)
+            )
+            self.spheres[cache_key] = vertex_list
+
+        return self.spheres[cache_key]
+
+
+# Global sphere cache
+_sphere_cache = SphereCache()
+
+
+def draw_sphere(radius, sectors=20, stacks=20, shader_program=None):
+    """
+    Draw a sphere using modern OpenGL vertex arrays.
+
+    Args:
+        radius: Sphere radius
+        sectors: Number of longitude divisions
+        stacks: Number of latitude divisions
+        shader_program: ShaderProgram to use for rendering
+    """
+    if shader_program is None:
+        return  # Can't draw without a shader in modern OpenGL
+
+    vertex_list = _sphere_cache.get_sphere(shader_program, radius, sectors, stacks)
+    if vertex_list:
+        vertex_list.draw(gl.GL_TRIANGLES)
 
 class WorldObj:
     visible: bool
@@ -143,13 +204,11 @@ class WorldObj:
         self.x_rot = 0  # Niki-added
         self.z_rot = 0  # Niki-added
 
-    def render_mesh(self, segment: bool, enable_leds: bool):
-        self.mesh.render(segment=segment)
+    def render_mesh(self, segment: bool, enable_leds: bool, shader_program=None):
+        self.mesh.render(segment=segment, shader_program=shader_program)
         if enable_leds and self.kind == MapFormat1Constants.KIND_DUCKIEBOT:
-            # attrs =
-            # gl.glPushAttrib(gl.GL_ALL_ATTRIB_BITS)
+            mvp = get_mvp()
             s_main = 0.01  # 1 cm sphere
-            # LIGHT_MULT_MAIN = 10
             s_halo = 0.04
             height = 0.05
             positions = {
@@ -169,63 +228,91 @@ class WorldObj:
                     "back_left": (0, 0, 1),
                     "back_right": (0, 0, 1),
                 }
+
+            # Enable blending for LED halos (still valid in modern OpenGL)
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE)
+
             for light_name, (px, py, pz) in positions.items():
                 color = np.clip(colors[light_name], 0, +1)
                 color_intensity = float(np.mean(color))
-                gl.glPushMatrix()
 
-                gl.glTranslatef(px, pz, py)
+                # Apply LED position transformation
+                mvp.model.push()
+                mvp.model.translate(px, pz, py)
 
-                gl.glEnable(gl.GL_BLEND)
-                # gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
-                gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE)
+                # Update shader with current transformation
+                if shader_program:
+                    set_uniform_matrix4(shader_program, 'model', mvp.model.get_matrix_array())
+                    # Note: Sphere color handled by shader lighting, not glColor4f
 
-                #sphere = gluNewQuadric()
+                # Draw main LED (full opacity)
+                draw_sphere(s_main, 10, 10, shader_program=shader_program)
 
-                gl.glColor4f(color[0], color[1], color[2], 1.0)
-                #gluSphere(sphere, s_main, 10, 10)
-                draw_sphere(s_main, 10, 10)
-
-                gl.glColor4f(color[0], color[1], color[2], 0.2)
-
+                # Draw halo (translucent)
                 s_halo_effective = color_intensity * s_halo
+                draw_sphere(s_halo_effective, 10, 10, shader_program=shader_program)
 
-                #gluSphere(sphere, s_halo_effective, 10, 10)
-                draw_sphere(s_halo_effective, 10, 10)
+                mvp.model.pop()
 
-                gl.glColor4f(1.0, 1.0, 1.0, 1.0)
-                gl.glBlendFunc(gl.GL_ONE, gl.GL_ZERO)
-                gl.glDisable(gl.GL_BLEND)
+            # Restore blend mode
+            gl.glBlendFunc(gl.GL_ONE, gl.GL_ZERO)
+            gl.glDisable(gl.GL_BLEND)
 
-                gl.glPopMatrix()
-                # we should push/pop this
-
-    def render(self, draw_bbox: bool, enable_leds: bool, segment: bool = False):
+    def render(self, draw_bbox: bool, enable_leds: bool, segment: bool = False, shader_program=None):
         """
         Renders the object to screen
         """
         if not self.visible:
             return
 
+        mvp = get_mvp()
+
         # Draw the bounding box
         if draw_bbox:
-            gl.glColor3f(1, 0, 0)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            gl.glVertex3f(self.obj_corners.T[0, 0], 0.01, self.obj_corners.T[1, 0])
-            gl.glVertex3f(self.obj_corners.T[0, 1], 0.01, self.obj_corners.T[1, 1])
-            gl.glVertex3f(self.obj_corners.T[0, 2], 0.01, self.obj_corners.T[1, 2])
-            gl.glVertex3f(self.obj_corners.T[0, 3], 0.01, self.obj_corners.T[1, 3])
-            gl.glEnd()
+            # Create vertices for the 4 corners at y=0.01
+            vertices = []
+            for i in range(4):
+                vertices.extend([
+                    self.obj_corners.T[0, i],
+                    0.01,
+                    self.obj_corners.T[1, i]
+                ])
 
-        gl.glPushMatrix()
-        gl.glTranslatef(*self.pos)
-        gl.glScalef(self.scale, self.scale, self.scale)
-        gl.glRotatef(self.x_rot, 1, 0, 0)  # Niki-added
-        gl.glRotatef(self.y_rot, 0, 1, 0)
-        gl.glRotatef(self.z_rot, 0, 0, 1)  # Niki-added
-        gl.glColor4f(*self.color)
-        self.render_mesh(segment, enable_leds=enable_leds)
-        gl.glPopMatrix()
+            # Red color for all vertices (RGBA format, normalized bytes)
+            colors = [255, 0, 0, 255] * 4  # RGBA red for 4 vertices
+
+            # Use simple shader for unlit rendering if available
+            if shader_program:
+                shader_program.use()
+                set_uniform_matrix4(shader_program, 'model', mvp.model.get_matrix_array())
+                set_uniform_matrix4(shader_program, 'view', mvp.view.get_matrix_array())
+                set_uniform_matrix4(shader_program, 'projection', mvp.projection.get_matrix_array())
+
+                # Create and draw vertex list using Pyglet 2.0+ API
+                bbox_vlist = shader_program.vertex_list(
+                    4,
+                    gl.GL_LINE_LOOP,
+                    position=('f', vertices),
+                    colors=('Bn', colors)
+                )
+                bbox_vlist.draw(gl.GL_LINE_LOOP)
+            else:
+                # Fallback if no shader program available (should not happen in modern pipeline)
+                pass
+
+        # Apply object transformations using matrix stack
+        mvp.model.push()
+        mvp.model.translate(*self.pos)
+        mvp.model.scale(self.scale, self.scale, self.scale)
+        mvp.model.rotate(self.x_rot, 1, 0, 0)
+        mvp.model.rotate(self.y_rot, 0, 1, 0)
+        mvp.model.rotate(self.z_rot, 0, 0, 1)
+
+        # Render the mesh (color will be handled by shader)
+        self.render_mesh(segment, enable_leds=enable_leds, shader_program=shader_program)
+
+        mvp.model.pop()
 
     # Below are the functions that need to
     # be reimplemented for any dynamic object

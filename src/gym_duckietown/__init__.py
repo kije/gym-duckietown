@@ -15,9 +15,9 @@ import pyglet
 on_mac = "Darwin" in platform.system()
 print(pyglet.options)
 if on_mac:
-    pyglet.options["headless"] = False
+    pyglet.options.headless = False
 else:
-    pyglet.options["headless"] = True
+    pyglet.options.headless = True
 
 path = os.path.dirname(os.path.dirname(__file__))
 logger.debug(f"gym-duckietown version {__version__} path {path}\n")

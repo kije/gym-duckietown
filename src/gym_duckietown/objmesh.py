@@ -231,11 +231,14 @@ class ObjMesh:
         # noinspection PyArgumentList
         self.max_coords = list_verts.max(axis=0).max(axis=0)
 
-        # Vertex lists, one per chunk
+        # Vertex lists, one per chunk (created lazily in render())
         self.vlists = []
 
         # Textures, one per chunk
         self.textures = []
+
+        # Store chunk geometry data for lazy vertex list creation
+        self.chunk_data = []
 
         # For each chunk
         for chunk in chunks:
@@ -243,14 +246,16 @@ class ObjMesh:
             end_idx = chunk["end_idx"]
             num_faces_chunk = end_idx - start_idx
 
-            # Create a vertex list to be used for rendering
-            vlist = pyglet.graphics.vertex_list(
-                3 * num_faces_chunk,
-                ("v3f", list_verts[start_idx:end_idx, :, :].reshape(-1)),
-                ("t2f", list_texcs[start_idx:end_idx, :, :].reshape(-1)),
-                ("n3f", list_norms[start_idx:end_idx, :, :].reshape(-1)),
-                ("c3f", list_color[start_idx:end_idx, :, :].reshape(-1)),
-            )
+            # Store geometry data instead of creating vertex lists immediately
+            # Vertex lists will be created in render() when shader_program is available
+            chunk_geom = {
+                'vertices': list_verts[start_idx:end_idx, :, :].reshape(-1).tolist(),
+                'normals': list_norms[start_idx:end_idx, :, :].reshape(-1).tolist(),
+                'tex_coords': list_texcs[start_idx:end_idx, :, :].reshape(-1).tolist(),
+                'colors': list_color[start_idx:end_idx, :, :].reshape(-1).tolist(),
+                'count': 3 * num_faces_chunk
+            }
+            self.chunk_data.append(chunk_geom)
 
             # If we want to control the colors of the objects, we'd need to replace this by a config file
             # or something
@@ -289,7 +294,6 @@ class ObjMesh:
                         segment_into_color=gen_segmentation_color(mesh_name),
                     )
 
-            self.vlists.append(vlist)
             self.textures.append(texture)
 
     def _load_mtl(self, model_file: str) -> Dict[str, MatInfo]:
@@ -357,19 +361,55 @@ class ObjMesh:
 
         return materials
 
-    def render(self, segment: bool = False):
+    def render(self, segment: bool = False, shader_program=None):
+        """
+        Render the mesh using modern shader pipeline.
+
+        Args:
+            segment: If True, use segmentation color texture
+            shader_program: Shader program to use (should be bound before calling)
+        """
         if segment:
             self = get_mesh(self.mesh_name, True)
+
+        # Import shader utilities
+        from .shaders import set_uniform_bool
+        from .matrix_stack import get_mvp
+
+        # Get current matrices for shader
+        mvp = get_mvp()
+
+        # Create vertex lists lazily if not already created and shader_program is available
+        if not self.vlists and shader_program and hasattr(self, 'chunk_data'):
+            for chunk_geom in self.chunk_data:
+                # Use Pyglet 2.0+ API: shader_program.vertex_list()
+                vlist = shader_program.vertex_list(
+                    chunk_geom['count'],
+                    gl.GL_TRIANGLES,
+                    position=('f', chunk_geom['vertices']),
+                    normals=('f', chunk_geom['normals']),
+                    tex_coords=('f', chunk_geom['tex_coords']),
+                    colors=('f', chunk_geom['colors'])
+                )
+                self.vlists.append(vlist)
 
         for idx, vlist in enumerate(self.vlists):
             texture = self.textures[idx]
 
             if texture:
-                gl.glEnable(gl.GL_TEXTURE_2D)
+                # Bind texture to texture unit 0 (modern approach)
+                gl.glActiveTexture(gl.GL_TEXTURE0)
                 gl.glBindTexture(texture.target, texture.id)
+
+                # Update shader uniforms if shader program is provided
+                if shader_program:
+                    shader_program.use()
+                    set_uniform_bool(shader_program, 'use_texture', True)
+                    shader_program['tex'] = 0  # Texture unit 0
             else:
-                gl.glDisable(gl.GL_TEXTURE_2D)
+                # No texture - use vertex colors
+                if shader_program:
+                    shader_program.use()
+                    set_uniform_bool(shader_program, 'use_texture', False)
 
             vlist.draw(gl.GL_TRIANGLES)
-
-        gl.glDisable(gl.GL_TEXTURE_2D)

@@ -327,8 +327,22 @@ class Simulator(gym.Env):
         # Invisible window to render into (shadow OpenGL context)
         self.shadow_window = pyglet.window.Window(width=1, height=1, visible=False)
 
+        # Initialize modern OpenGL infrastructure
+        from .shaders import ShaderManager, set_uniform_matrix4, set_uniform_matrix3, set_uniform_vector3, set_uniform_bool
+        from .matrix_stack import get_mvp, reset_mvp
+        from pyglet.math import Mat4, Vec3
+
+        # Initialize shader system
+        self.shader_manager = ShaderManager()
+        self.main_program = self.shader_manager.get_program('main')
+        self.simple_program = self.shader_manager.get_program('simple')
+
+        # Initialize matrix stacks
+        reset_mvp()
+        self.mvp = get_mvp()
+
         # For displaying text
-        self.text_label = pyglet.text.Label(font_name="Arial", font_size=14, x=5, y=WINDOW_HEIGHT - 19)
+        self.text_label = pyglet.text.Label("", font_name="Arial", font_size=14, x=5, y=WINDOW_HEIGHT - 19)
 
         # Create a frame buffer object for the observation
         self.multi_fbo, self.final_fbo = create_frame_buffers(self.camera_width, self.camera_height, 4)
@@ -502,8 +516,24 @@ class Simulator(gym.Env):
         # textures=textures,
         #             normals=normals)
         total = len(vertices) // 3
-        self.road_vlist = pyglet.graphics.vertex_list(
-            total, ("v3f", vertices), ("t2f", textures), ("n3f", normals), ("c4B", colors)
+
+        # Convert quads to triangles using indexed vertex list
+        # Each group of 4 vertices becomes 2 triangles
+        indices = []
+        for i in range(0, total, 4):
+            # Quad vertices: i, i+1, i+2, i+3
+            # Triangle 1: i, i+1, i+2
+            # Triangle 2: i, i+2, i+3
+            indices.extend([i, i+1, i+2, i, i+2, i+3])
+
+        self.road_vlist = self.main_program.vertex_list_indexed(
+            total,
+            gl.GL_TRIANGLES,
+            indices,
+            position=('f', vertices),
+            tex_coords=('f', textures),
+            normals=('f', normals),
+            colors=('Bn', colors)
         )
         logger.info("done")
         # Create the vertex list for the ground quad
@@ -523,7 +553,25 @@ class Simulator(gym.Env):
             -0.8,
             1,
         ]
-        self.ground_vlist = pyglet.graphics.vertex_list(4, ("v3f", verts))
+        # Add normals (pointing up) and default colors for shader compatibility
+        normals = [0, 1, 0] * 4
+        colors = [255, 255, 255, 255] * 4
+        # Add dummy texture coordinates (2 coords per vertex = 8 floats)
+        ground_tex_coords = [0, 0, 0, 0, 0, 0, 0, 0]
+
+        # Convert quad to triangles using indexed vertex list
+        # Define two triangles: (0,1,2) and (0,2,3)
+        ground_indices = [0, 1, 2, 0, 2, 3]
+
+        self.ground_vlist = self.main_program.vertex_list_indexed(
+            4,
+            gl.GL_TRIANGLES,
+            ground_indices,
+            position=('f', verts),
+            normals=('f', normals),
+            tex_coords=('f', ground_tex_coords),
+            colors=('Bn', colors)
+        )
 
     def reset(self, segment: bool = False):
         """
@@ -577,18 +625,9 @@ class Simulator(gym.Env):
         # specular = np.array([0.3, 0.3, 0.3, 1])
         specular = np.array([0.0, 0.0, 0.0, 1])
 
-        # logger.info(light_pos=light_pos, ambient=ambient, diffuse=diffuse, specular=specular)
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, (gl.GLfloat * 4)(*light_pos))
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_AMBIENT, (gl.GLfloat * 4)(*ambient))
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, (gl.GLfloat * 4)(*diffuse))
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_SPECULAR, (gl.GLfloat * 4)(*specular))
-
-        # gl.glLightfv(gl.GL_LIGHT0, gl.GL_CONSTANT_ATTENUATION, (gl.GLfloat * 1)(0.4))
-        # gl.glLightfv(gl.GL_LIGHT0, gl.GL_LINEAR_ATTENUATION, (gl.GLfloat * 1)(0.3))
-        # gl.glLightfv(gl.GL_LIGHT0, gl.GL_QUADRATIC_ATTENUATION, (gl.GLfloat * 1)(0.1))
-
-        gl.glEnable(gl.GL_LIGHTING)
-        gl.glEnable(gl.GL_COLOR_MATERIAL)
+        # Lighting is now handled by shaders - see set_uniform_vector3() calls in render_obs()
+        # Modern OpenGL 3.3+ Core Profile does not support fixed-function lighting (glLight*, GL_LIGHTING)
+        # The fragment shader in shaders.py implements diffuse lighting using the 'light_dir' uniform
 
         # Ground color
         self.ground_color = self._perturb(np.array(self.color_ground), 0.3)
@@ -626,9 +665,14 @@ class Simulator(gym.Env):
             c = self.np_random.uniform(low=0, high=0.9)
             c = self._perturb([c, c, c], 0.1)
             verts += [p[0], p[1], p[2]]
-            colors += [c[0], c[1], c[2]]
+            colors += [c[0], c[1], c[2], 1.0]  # Add alpha=1.0
 
-        self.tri_vlist = pyglet.graphics.vertex_list(3 * numTris, ("v3f", verts), ("c3f", colors))
+        self.tri_vlist = self.main_program.vertex_list(
+            3 * numTris,
+            gl.GL_TRIANGLES,
+            position=('f', verts),
+            colors=('f', colors)  # Now RGBA float
+        )
 
         # Randomize tile parameters
         for tile in self.grid:
@@ -1727,22 +1771,11 @@ class Simulator(gym.Env):
         # pyglet.gl._shadow_window.switch_to()
         self.shadow_window.switch_to()
 
-        if segment:
-            gl.glDisable(gl.GL_LIGHT0)
-            gl.glDisable(gl.GL_LIGHTING)
-            gl.glDisable(gl.GL_COLOR_MATERIAL)
-        else:
-            gl.glEnable(gl.GL_LIGHT0)
-            gl.glEnable(gl.GL_LIGHTING)
-            gl.glEnable(gl.GL_COLOR_MATERIAL)
-
-        # note by default the ambient light is 0.2,0.2,0.2
-        # ambient = [0.03, 0.03, 0.03, 1.0]
-        ambient = [0.3, 0.3, 0.3, 1.0]
+        # Segmentation mode and normal rendering both use shader-based lighting
+        # The fragment shader handles lighting calculations (see shaders.py)
+        # No need to disable/enable fixed-function lighting as it doesn't exist in Core Profile
 
         gl.glEnable(gl.GL_POLYGON_SMOOTH)
-
-        gl.glLightModelfv(gl.GL_LIGHT_MODEL_AMBIENT, (gl.GLfloat * 4)(*ambient))
         # Bind the multisampled frame buffer
         gl.glEnable(gl.GL_MULTISAMPLE)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, multi_fbo)
@@ -1755,10 +1788,16 @@ class Simulator(gym.Env):
         gl.glClearDepth(1.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
-        # Set the projection matrix
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.gluPerspective(self.cam_fov_y, width / float(height), 0.04, 100.0)
+        # Import modern OpenGL infrastructure (local import for performance)
+        from .shaders import set_uniform_matrix4, set_uniform_matrix3, set_uniform_vector3, set_uniform_bool
+        from pyglet.math import Mat4, Vec3
+
+        # Set up perspective projection matrix using modern API
+        self.mvp.projection.load_identity()
+        aspect_ratio = width / float(height)
+        fov_rad = np.radians(self.cam_fov_y)
+        projection = Mat4.perspective_projection(aspect_ratio, z_near=0.04, z_far=100.0, fov=fov_rad)
+        self.mvp.projection.stack[-1] = projection
 
         # Set modelview matrix
         # Note: we add a bit of noise to the camera position for data augmentation
@@ -1770,18 +1809,32 @@ class Simulator(gym.Env):
 
         x, y, z = pos + self.cam_offset
         dx, dy, dz = get_dir_vec(angle)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
+
+        # Reset view matrix
+        self.mvp.view.load_identity()
 
         if self.draw_bbox:
             y += 0.8
-            gl.glRotatef(90, 1, 0, 0)
+            # Apply rotation to view matrix
+            self.mvp.view.rotate(90, 1, 0, 0)
+            look_from = (x, y, z)
+            look_at = (x + dx, y + dy, z + dz)
+            up_vector = (0, 1, 0)
         elif not top_down:
             y += self.cam_height
-            gl.glRotatef(self.cam_angle[0], 1, 0, 0)
-            gl.glRotatef(self.cam_angle[1], 0, 1, 0)
-            gl.glRotatef(self.cam_angle[2], 0, 0, 1)
-            gl.glTranslatef(0, 0, CAMERA_FORWARD_DIST)
+            # Apply camera rotations
+            self.mvp.view.rotate(self.cam_angle[0], 1, 0, 0)
+            self.mvp.view.rotate(self.cam_angle[1], 0, 1, 0)
+            self.mvp.view.rotate(self.cam_angle[2], 0, 0, 1)
+            self.mvp.view.translate(0, 0, CAMERA_FORWARD_DIST)
+            look_from = (x, y, z)
+            look_at = (x + dx, y + dy, z + dz)
+            up_vector = (0, 1, 0)
+        else:
+            # top_down view
+            look_from = None
+            look_at = None
+            up_vector = None
 
         if top_down:
             a = (self.grid_width * self.road_tile_size) / 2
@@ -1792,62 +1845,62 @@ class Simulator(gym.Env):
 
             H_FROM_FLOOR = H_to_fit / (np.tan(fov_y_rad / 2))
 
-            look_from = a, H_FROM_FLOOR, b
-            look_at = a, 0.0, b - 0.01
-            up_vector = 0.0, 1.0, 0
-            gl.gluLookAt(*look_from, *look_at, *up_vector)
+            look_from = (a, H_FROM_FLOOR, b)
+            look_at = (a, 0.0, b - 0.01)
+            up_vector = (0.0, 1.0, 0)
         else:
-            look_from = x, y, z
-            look_at = x + dx, y + dy, z + dz
-            up_vector = 0.0, 1.0, 0.0
-            gl.gluLookAt(*look_from, *look_at, *up_vector)
+            look_from = (x, y, z)
+            look_at = (x + dx, y + dy, z + dz)
+            up_vector = (0.0, 1.0, 0.0)
 
-        # Draw the ground quad
-        gl.glDisable(gl.GL_TEXTURE_2D)
-        # background is magenta when segmenting for easy isolation of main map image
-        gl.glColor3f(*self.ground_color if not segment else [255, 0, 255])  # XXX
-        gl.glPushMatrix()
-        gl.glScalef(50, 0.01, 50)
-        self.ground_vlist.draw(gl.GL_QUADS)
-        gl.glPopMatrix()
+        # Create look-at view matrix
+        # Convert to plain Python floats to avoid numpy scalar contamination
+        view_matrix = Mat4.look_at(
+            Vec3(float(look_from[0]), float(look_from[1]), float(look_from[2])),
+            Vec3(float(look_at[0]), float(look_at[1]), float(look_at[2])),
+            Vec3(float(up_vector[0]), float(up_vector[1]), float(up_vector[2]))
+        )
+        self.mvp.view.stack[-1] = view_matrix
+
+        # Use main shader program for 3D rendering
+        self.main_program.use()
+        set_uniform_matrix4(self.main_program, 'projection', self.mvp.projection.get_matrix_array())
+        set_uniform_matrix4(self.main_program, 'view', self.mvp.view.get_matrix_array())
+        set_uniform_vector3(self.main_program, 'light_dir', (0, 1, 0.5))  # Light from above-front
+        set_uniform_bool(self.main_program, 'use_texture', False)  # Will enable per-object
+
+        # Draw the ground quad (no texture - already disabled above)
+        # Reset model matrix
+        self.mvp.model.load_identity()
+        self.mvp.model.scale(50, 0.01, 50)
+        # Calculate normal matrix (inverse transpose of model matrix)
+        model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
+        normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
+        set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
+        set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
+        self.ground_vlist.draw(gl.GL_TRIANGLES)
+        self.mvp.model.load_identity()
 
         # Draw the ground/noise triangles
         if not segment:
-            gl.glPushMatrix()
-            gl.glTranslatef(0.0, 0.1, 0.0)
+            self.mvp.model.push()
+            self.mvp.model.translate(0.0, 0.1, 0.0)
+            # Calculate normal matrix
+            model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
+            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
+            set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
+            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
             self.tri_vlist.draw(gl.GL_TRIANGLES)
-            gl.glPopMatrix()
+            self.mvp.model.pop()
 
-        # Draw the road quads
-        gl.glEnable(gl.GL_TEXTURE_2D)
+        # Draw the road quads (with texture)
+        set_uniform_bool(self.main_program, 'use_texture', True)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-        add_lights = False
-        if add_lights:
-            for i in range(1):
-                li = gl.GL_LIGHT0 + 1 + i
-                # li_pos = [i + 1, 1, i + 1, 1]
 
-                li_pos = [0.0, 0.2, 3.0, 1.0]
-                diffuse = [0.0, 0.0, 1.0, 1.0] if i % 2 == 0 else [1.0, 0.0, 0.0, 1.0]
-                ambient = [0.0, 0.0, 0.0, 1.0]
-                specular = [0.0, 0.0, 0.0, 1.0]
-                spot_direction = [0.0, -1.0, 0.0]
-                logger.debug(
-                    li=li, li_pos=li_pos, ambient=ambient, diffuse=diffuse, spot_direction=spot_direction
-                )
-                gl.glLightfv(li, gl.GL_POSITION, (gl.GLfloat * 4)(*li_pos))
-                gl.glLightfv(li, gl.GL_AMBIENT, (gl.GLfloat * 4)(*ambient))
-                gl.glLightfv(li, gl.GL_DIFFUSE, (gl.GLfloat * 4)(*diffuse))
-                gl.glLightfv(li, gl.GL_SPECULAR, (gl.GLfloat * 4)(*specular))
-                gl.glLightfv(li, gl.GL_SPOT_DIRECTION, (gl.GLfloat * 3)(*spot_direction))
-                # gl.glLightfv(li, gl.GL_SPOT_EXPONENT, (gl.GLfloat * 1)(64.0))
-                gl.glLightf(li, gl.GL_SPOT_CUTOFF, 60)
-
-                gl.glLightfv(li, gl.GL_CONSTANT_ATTENUATION, (gl.GLfloat * 1)(1.0))
-                # gl.glLightfv(li, gl.GL_LINEAR_ATTENUATION, (gl.GLfloat * 1)(0.1))
-                gl.glLightfv(li, gl.GL_QUADRATIC_ATTENUATION, (gl.GLfloat * 1)(0.2))
-                gl.glEnable(li)
+        # Additional lights not supported - shader uses single directional light
+        # To implement multiple lights, the fragment shader in shaders.py would need to be extended
+        # with support for point lights, spotlights, and multiple light sources
 
         # For each grid tile
         for i, j in itertools.product(range(self.grid_width), range(self.grid_height)):
@@ -1865,12 +1918,11 @@ class Simulator(gym.Env):
 
             # logger.info('drawing', tile_color=color)
 
-            gl.glColor4f(*color)
-
-            gl.glPushMatrix()
+            # Use matrix stack for transformations
+            self.mvp.model.push()
             TS = self.road_tile_size
-            gl.glTranslatef((i + 0.5) * TS, 0, (j + 0.5) * TS)
-            gl.glRotatef(angle * 90 + 180, 0, 1, 0)
+            self.mvp.model.translate((i + 0.5) * TS, 0, (j + 0.5) * TS)
+            self.mvp.model.rotate(angle * 90 + 180, 0, 1, 0)
 
             # gl.glEnable(gl.GL_BLEND)
             # gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
@@ -1878,10 +1930,17 @@ class Simulator(gym.Env):
             # Bind the appropriate texture
             texture.bind(segment)
 
-            self.road_vlist.draw(gl.GL_QUADS)
+            # Update shader uniforms (including normal matrix)
+            model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
+            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
+            set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
+            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
+            set_uniform_bool(self.main_program, 'use_texture', True)
+
+            self.road_vlist.draw(gl.GL_TRIANGLES)
             # gl.glDisable(gl.GL_BLEND)
 
-            gl.glPopMatrix()
+            self.mvp.model.pop()
 
             if self.draw_curve and tile["drivable"]:
                 # Find curve with largest dotproduct with heading
@@ -1893,38 +1952,61 @@ class Simulator(gym.Env):
 
                 # Current ("closest") curve drawn in Red
                 pts = curves[np.argmax(dot_prods)]
-                bezier_draw(pts, n=20, red=True)
+                bezier_draw(pts, n=20, red=True, shader_program=self.simple_program)
 
                 pts = self._get_curve(i, j)
                 for idx, pt in enumerate(pts):
                     # Don't draw current curve in blue
                     if idx == np.argmax(dot_prods):
                         continue
-                    bezier_draw(pt, n=20)
+                    bezier_draw(pt, n=20, shader_program=self.simple_program)
 
         # For each object
         for obj in self.objects:
-            obj.render(draw_bbox=self.draw_bbox, segment=segment, enable_leds=self.enable_leds)
+            obj.render(draw_bbox=self.draw_bbox, segment=segment, enable_leds=self.enable_leds, shader_program=self.main_program)
 
         # Draw the agent's own bounding box
         if self.draw_bbox:
             corners = get_agent_corners(pos, angle)
-            gl.glColor3f(1, 0, 0)
-            gl.glBegin(gl.GL_LINE_LOOP)
-            gl.glVertex3f(corners[0, 0], 0.01, corners[0, 1])
-            gl.glVertex3f(corners[1, 0], 0.01, corners[1, 1])
-            gl.glVertex3f(corners[2, 0], 0.01, corners[2, 1])
-            gl.glVertex3f(corners[3, 0], 0.01, corners[3, 1])
-            gl.glEnd()
+            # Create a temporary vertex list for the bounding box
+            bbox_verts = [
+                corners[0, 0], 0.01, corners[0, 1],
+                corners[1, 0], 0.01, corners[1, 1],
+                corners[2, 0], 0.01, corners[2, 1],
+                corners[3, 0], 0.01, corners[3, 1],
+            ]
+            bbox_colors = [255, 0, 0, 255] * 4  # Red color
+            bbox_vlist = self.simple_program.vertex_list(
+                4,
+                gl.GL_LINE_LOOP,
+                position=('f', bbox_verts),
+                colors=('Bn', bbox_colors)
+            )
+
+            # Use simple shader for unlit line drawing
+            self.simple_program.use()
+            self.mvp.model.load_identity()
+            set_uniform_matrix4(self.simple_program, 'projection', self.mvp.projection.get_matrix_array())
+            set_uniform_matrix4(self.simple_program, 'view', self.mvp.view.get_matrix_array())
+            set_uniform_matrix4(self.simple_program, 'model', self.mvp.model.get_matrix_array())
+
+            # Draw bounding box
+            gl.glLineWidth(2.0)
+            bbox_vlist.draw()
+            gl.glLineWidth(1.0)
+
+            # Switch back to main program
+            self.main_program.use()
 
         if top_down:
-            gl.glPushMatrix()
-            gl.glTranslatef(*self.cur_pos)
-            gl.glScalef(1, 1, 1)
-            gl.glRotatef(self.cur_angle * 180 / np.pi, 0, 1, 0)
+            self.mvp.model.push()
+            self.mvp.model.translate(*self.cur_pos)
+            self.mvp.model.scale(1, 1, 1)
+            self.mvp.model.rotate(self.cur_angle * 180 / np.pi, 0, 1, 0)
+            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
             # glColor3f(*self.color)
-            self.mesh.render()
-            gl.glPopMatrix()
+            self.mesh.render(shader_program=self.main_program)
+            self.mvp.model.pop()
         draw_xyz_axes = False
         if draw_xyz_axes:
             draw_axes()
@@ -2017,12 +2099,9 @@ class Simulator(gym.Env):
         # Bind the default frame buffer
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
-        # Setup orghogonal projection
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
-        gl.glOrtho(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT, 0, 10)
+        # Setup orthogonal projection for 2D rendering
+        # Note: For 2D texture blitting, we don't need shader setup
+        # Pyglet handles this internally for image blitting
 
         # Draw the image to the rendering window
         width = img.shape[1]
@@ -2135,23 +2214,12 @@ class FrameBufferMemory:
 
 
 def draw_axes():
-    gl.glPushMatrix()
-    gl.glLineWidth(4.0)
-    gl.glTranslatef(0.0, 0.0, 0.0)
-
-    gl.glBegin(gl.GL_LINES)
-    L = 0.3
-    gl.glColor3f(1.0, 0.0, 0.0)
-    gl.glVertex3f(0.0, 0.0, 0.0)
-    gl.glVertex3f(L, 0.0, 0.0)
-
-    gl.glColor3f(0.0, 1.0, 0.0)
-    gl.glVertex3f(0.0, 0.0, 0.0)
-    gl.glVertex3f(0.0, L, 0.0)
-
-    gl.glColor3f(0.0, 0.0, 1.0)
-    gl.glVertex3f(0.0, 0.0, 0.0)
-    gl.glVertex3f(0.0, 0.0, L)
-    gl.glEnd()
-
-    gl.glPopMatrix()
+    """Draw XYZ axes using modern OpenGL (currently unused, placeholder for future implementation)."""
+    # Note: This function uses glBegin/glEnd which is legacy OpenGL.
+    # For modern OpenGL, we would need to:
+    # 1. Create a vertex list with line data
+    # 2. Use the simple shader program
+    # 3. Update matrices via uniforms
+    # Currently this function is not called in normal operation (draw_xyz_axes = False)
+    # If needed in the future, implement using vertex lists and shaders
+    pass

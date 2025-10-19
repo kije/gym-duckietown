@@ -26,8 +26,7 @@ line = "daffy"
 install_requires = [
     "gymnasium>=1.2.1",
     "numpy>=1.21.0",
-    "pyglet",
-    # 'pyglet',
+    "pyglet>=2.0.0",
     "pyzmq>=16.0.0",
     "opencv-python>=3.4",
     "PyYAML>=3.11",
@@ -39,11 +38,6 @@ install_requires = [
     "Pillow",
 ]
 
-system_version = tuple(sys.version_info)[:3]
-
-if system_version < (3, 7):
-    install_requires.append("dataclasses")
-
 
 setup(
     name=f"duckietown-gym-{line}",
@@ -51,6 +45,7 @@ setup(
     packages=find_packages("src"),
     zip_safe=False,
     version=version,
+    python_requires=">=3.11",
     keywords="duckietown, environment, agent, rl, openaigym, openai-gym, gym",
     include_package_data=True,
     install_requires=install_requires,

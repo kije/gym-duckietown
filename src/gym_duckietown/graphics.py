@@ -132,7 +132,8 @@ def load_texture(tex_path: str, segment: bool = False, segment_into_color=None):
     tex = img.get_texture()
     # if img.width == img.height:
     #     tex = tex.get_mipmapped_texture()
-    gl.glEnable(tex.target)
+    # In modern OpenGL 3.3+, glEnable(GL_TEXTURE_2D) is deprecated and invalid
+    # Just bind the texture - the shader will use it
     gl.glBindTexture(tex.target, tex.id)
     rawimage = img.get_image_data()
 
@@ -222,7 +223,7 @@ def create_frame_buffers(width: int, height: int, num_samples: int) -> Tuple[int
 
     # Sanity check
 
-    if pyglet.options["debug_gl"]:
+    if pyglet.options.debug_gl:
         res = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
         assert res == gl.GL_FRAMEBUFFER_COMPLETE
 
@@ -238,7 +239,7 @@ def create_frame_buffers(width: int, height: int, num_samples: int) -> Tuple[int
     gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0, gl.GL_RGBA, gl.GL_FLOAT, None)
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, fbTex, 0)
 
-    if pyglet.options["debug_gl"]:
+    if pyglet.options.debug_gl:
         res = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
         assert res == gl.GL_FRAMEBUFFER_COMPLETE
 
@@ -333,17 +334,40 @@ def bezier_closest(cps, p, t_bot=0, t_top=1, n=8):
     return bezier_closest(cps, p, mid, t_top, n - 1)
 
 
-def bezier_draw(cps, n=20, red=False):
+def bezier_draw(cps, n=20, red=False, shader_program=None):
+    """Draw Bezier curve using modern OpenGL vertex lists."""
+    if shader_program is None:
+        return  # Can't draw without shader
+
     pts = [bezier_point(cps, i / (n - 1)) for i in range(0, n)]
-    gl.glBegin(gl.GL_LINE_STRIP)
 
-    if red:
-        gl.glColor3f(1, 0, 0)
-    else:
-        gl.glColor3f(0, 0, 1)
+    # Flatten to vertex array
+    vertices = []
+    for p in pts:
+        vertices.extend([p[0], p[1], p[2]])
 
-    for i, p in enumerate(pts):
-        gl.glVertex3f(*p)
+    # Choose color
+    color = [255, 0, 0, 255] if red else [0, 0, 255, 255]
+    colors = color * n  # Repeat for each vertex
 
-    gl.glEnd()
-    gl.glColor3f(1, 1, 1)
+    # Use simple shader for unlit line drawing
+    from .matrix_stack import get_mvp
+    from .shaders import set_uniform_matrix4
+
+    mvp = get_mvp()
+    shader_program.use()
+    set_uniform_matrix4(shader_program, 'model', mvp.model.get_matrix_array())
+    set_uniform_matrix4(shader_program, 'view', mvp.view.get_matrix_array())
+    set_uniform_matrix4(shader_program, 'projection', mvp.projection.get_matrix_array())
+
+    # Create temporary vertex list
+    vlist = shader_program.vertex_list(
+        n,
+        gl.GL_LINE_STRIP,
+        position=('f', vertices),
+        colors=('Bn', colors)
+    )
+
+    gl.glLineWidth(2.0)
+    vlist.draw(gl.GL_LINE_STRIP)
+    gl.glLineWidth(1.0)
