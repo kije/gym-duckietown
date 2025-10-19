@@ -25,7 +25,7 @@ line = "daffy"
 
 install_requires = [
     "gymnasium>=1.2.1",
-    "numpy>=1.10.0,<=1.20.0",
+    "numpy>=1.21.0",
     "pyglet",
     # 'pyglet',
     "pyzmq>=16.0.0",
