@@ -124,14 +124,15 @@ class SphereCache:
             vertices, normals, texcoords, indices, colors = self.geometry_cache[geom_key]
 
             # Create vertex list using Pyglet 2.0+ API
+            # Note: attribute names must match shader variable names exactly
             vertex_list = shader_program.vertex_list_indexed(
                 len(vertices) // 3,
                 gl.GL_TRIANGLES,
                 indices,
                 position=('f', vertices),
-                normals=('f', normals),
+                normal=('f', normals),  # 'normal' not 'normals'
                 tex_coords=('f', texcoords),
-                colors=('f', colors)
+                color=('f', colors)  # 'color' not 'colors'
             )
             self.spheres[cache_key] = vertex_list
 
@@ -294,7 +295,7 @@ class WorldObj:
                     4,
                     gl.GL_LINE_LOOP,
                     position=('f', vertices),
-                    colors=('Bn', colors)
+                    color=('Bn', colors)  # 'color' not 'colors'
                 )
                 bbox_vlist.draw(gl.GL_LINE_LOOP)
             else:

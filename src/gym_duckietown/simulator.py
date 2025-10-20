@@ -532,8 +532,8 @@ class Simulator(gym.Env):
             indices,
             position=('f', vertices),
             tex_coords=('f', textures),
-            normals=('f', normals),
-            colors=('Bn', colors)
+            normal=('f', normals),  # 'normal' not 'normals'
+            color=('Bn', colors)  # 'color' not 'colors'
         )
         logger.info("done")
         # Create the vertex list for the ground quad
@@ -568,9 +568,9 @@ class Simulator(gym.Env):
             gl.GL_TRIANGLES,
             ground_indices,
             position=('f', verts),
-            normals=('f', normals),
+            normal=('f', normals),  # 'normal' not 'normals'
             tex_coords=('f', ground_tex_coords),
-            colors=('Bn', colors)
+            color=('Bn', colors)  # 'color' not 'colors'
         )
 
     def reset(self, segment: bool = False):
@@ -659,19 +659,25 @@ class Simulator(gym.Env):
         # These are distractors, junk on the floor
         numTris = self.num_tris_distractors
         verts = []
+        normals = []
+        texcoords = []
         colors = []
         for _ in range(0, 3 * numTris):
             p = self.np_random.uniform(low=[-20, -0.6, -20], high=[20, -0.3, 20], size=(3,))
             c = self.np_random.uniform(low=0, high=0.9)
             c = self._perturb([c, c, c], 0.1)
             verts += [p[0], p[1], p[2]]
+            normals += [0.0, 1.0, 0.0]  # Upward facing normals
+            texcoords += [0.0, 0.0]  # Dummy texture coordinates
             colors += [c[0], c[1], c[2], 1.0]  # Add alpha=1.0
 
         self.tri_vlist = self.main_program.vertex_list(
             3 * numTris,
             gl.GL_TRIANGLES,
             position=('f', verts),
-            colors=('f', colors)  # Now RGBA float
+            normal=('f', normals),  # Required by shader
+            tex_coords=('f', texcoords),  # Required by shader
+            color=('f', colors)  # 'color' not 'colors' - Now RGBA float
         )
 
         # Randomize tile parameters
@@ -1795,8 +1801,8 @@ class Simulator(gym.Env):
         # Set up perspective projection matrix using modern API
         self.mvp.projection.load_identity()
         aspect_ratio = width / float(height)
-        fov_rad = np.radians(self.cam_fov_y)
-        projection = Mat4.perspective_projection(aspect_ratio, z_near=0.04, z_far=100.0, fov=fov_rad)
+        # Note: Mat4.perspective_projection expects FOV in DEGREES, not radians
+        projection = Mat4.perspective_projection(aspect_ratio, z_near=0.04, z_far=100.0, fov=self.cam_fov_y)
         self.mvp.projection.stack[-1] = projection
 
         # Set modelview matrix
@@ -1980,7 +1986,7 @@ class Simulator(gym.Env):
                 4,
                 gl.GL_LINE_LOOP,
                 position=('f', bbox_verts),
-                colors=('Bn', bbox_colors)
+                color=('Bn', bbox_colors)  # 'color' not 'colors'
             )
 
             # Use simple shader for unlit line drawing

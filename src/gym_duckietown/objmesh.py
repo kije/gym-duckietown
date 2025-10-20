@@ -181,7 +181,7 @@ class ObjMesh:
         list_verts = np.zeros(shape=(num_faces, 3, 3), dtype=np.float32)
         list_norms = np.zeros(shape=(num_faces, 3, 3), dtype=np.float32)
         list_texcs = np.zeros(shape=(num_faces, 3, 2), dtype=np.float32)
-        list_color = np.zeros(shape=(num_faces, 3, 3), dtype=np.float32)
+        list_color = np.zeros(shape=(num_faces, 3, 4), dtype=np.float32)  # RGBA format (4 components)
 
         # For each triangle
         for f_idx, face in enumerate(faces):
@@ -209,7 +209,8 @@ class ObjMesh:
                 list_verts[f_idx, l_idx, :] = vert
                 list_texcs[f_idx, l_idx, :] = texc
                 list_norms[f_idx, l_idx, :] = normal
-                list_color[f_idx, l_idx, :] = f_color
+                list_color[f_idx, l_idx, :3] = f_color  # RGB components
+                list_color[f_idx, l_idx, 3] = 1.0  # Alpha component
 
         # Re-center the object so that the base is at y=0
         # and the object is centered in x and z
@@ -383,13 +384,14 @@ class ObjMesh:
         if not self.vlists and shader_program and hasattr(self, 'chunk_data'):
             for chunk_geom in self.chunk_data:
                 # Use Pyglet 2.0+ API: shader_program.vertex_list()
+                # Note: attribute names must match shader variable names exactly
                 vlist = shader_program.vertex_list(
                     chunk_geom['count'],
                     gl.GL_TRIANGLES,
                     position=('f', chunk_geom['vertices']),
-                    normals=('f', chunk_geom['normals']),
+                    normal=('f', chunk_geom['normals']),  # 'normal' not 'normals'
                     tex_coords=('f', chunk_geom['tex_coords']),
-                    colors=('f', chunk_geom['colors'])
+                    color=('f', chunk_geom['colors'])  # 'color' not 'colors'
                 )
                 self.vlists.append(vlist)
 
