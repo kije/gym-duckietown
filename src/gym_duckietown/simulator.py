@@ -2064,7 +2064,7 @@ class Simulator(gym.Env):
             self.main_program.use()
 
         # Draw robot mesh in top-down view to show robot location
-        if view_mode == "top_down":
+        if view_mode == "top_down" or view_mode == "follow":
             self.mvp.model.push()
             self.mvp.model.translate(*self.cur_pos)
             self.mvp.model.scale(1, 1, 1)
