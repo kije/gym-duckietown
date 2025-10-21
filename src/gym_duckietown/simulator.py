@@ -2159,7 +2159,7 @@ class Simulator(gym.Env):
         )
 
         # self.undistort - for UndistortWrapper
-        if self.distortion and not self.undistort and mode != "free_cam":
+        if self.distortion and not self.undistort and mode == "robot":
             img = self.camera_model.distort(img)
 
         if mode == "rgb_array":
