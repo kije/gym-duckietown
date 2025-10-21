@@ -555,7 +555,7 @@ class Simulator(gym.Env):
         ]
         # Add normals (pointing up) and default colors for shader compatibility
         normals = [0, 1, 0] * 4
-        colors = [255, 255, 255, 255] * 4
+        colors = [int(self.color_ground[0]), int(self.color_ground[1]), int(self.color_ground[2]), 255] * 4
         # Add dummy texture coordinates (2 coords per vertex = 8 floats)
         ground_tex_coords = [0, 0, 0, 0, 0, 0, 0, 0]
 
