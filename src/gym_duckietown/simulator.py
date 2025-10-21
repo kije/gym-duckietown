@@ -229,6 +229,10 @@ class Simulator(gym.Env):
         color_sky: Sequence[float] = BLUE_SKY,
         style: str = "photos",
         enable_leds: bool = False,
+        window_view_mode: str = "robot",
+        window_follow_distance: float = 2.0,
+        window_follow_height: float = 1.5,
+        window_follow_pitch: float = 30.0,
     ):
         """
 
@@ -252,6 +256,10 @@ class Simulator(gym.Env):
         :param randomize_maps_on_reset: If true, randomizes the map on reset (Slows down training)
         :param style: String that represent which tiles will be loaded. One of ["photos", "synthetic"]
         :param enable_leds: Enables LEDs drawing.
+        :param window_view_mode: Window rendering perspective ("robot", "top_down", "follow", "free"). Observations always use robot camera.
+        :param window_follow_distance: Distance (meters) behind robot for follow camera mode
+        :param window_follow_height: Height (meters) above ground for follow camera mode
+        :param window_follow_pitch: Downward pitch angle (degrees) for follow camera mode
         """
         self.enable_leds = enable_leds
         information = get_graphics_information()
@@ -292,6 +300,12 @@ class Simulator(gym.Env):
 
         # Flag to enable/disable domain randomization
         self.domain_rand = domain_rand
+
+        # Window rendering view mode (independent of observations)
+        self.window_view_mode = window_view_mode
+        self.window_follow_distance = window_follow_distance
+        self.window_follow_height = window_follow_height
+        self.window_follow_pitch = window_follow_pitch
 
         self.randomizer = Randomizer()
 
@@ -1418,6 +1432,80 @@ class Simulator(gym.Env):
 
         return point, tangent
 
+    def _compute_window_camera_config(self, view_mode: str) -> dict:
+        """
+        Compute camera configuration for window rendering based on view mode.
+
+        :param view_mode: One of "robot", "top_down", "follow", "free"
+        :return: Dictionary with camera configuration
+        """
+        pos = self.cur_pos
+        angle = self.cur_angle
+
+        if self.domain_rand:
+            pos = pos + self.randomization_settings["camera_noise"]
+
+        x, y, z = pos + self.cam_offset
+        dx, dy, dz = get_dir_vec(angle)
+
+        if view_mode == "robot":
+            # Robot camera view (first-person)
+            y += self.cam_height
+            return {
+                "mode": "robot",
+                "look_from": (x, y, z),
+                "look_at": (x + dx, y + dy, z + dz),
+                "up_vector": (0, 1, 0),
+                "cam_angle": self.cam_angle,
+            }
+        elif view_mode == "top_down":
+            # Overhead view
+            a = (self.grid_width * self.road_tile_size) / 2
+            b = (self.grid_height * self.road_tile_size) / 2
+            fov_y_deg = self.cam_fov_y
+            fov_y_rad = np.deg2rad(fov_y_deg)
+            H_to_fit = max(a, b) + 0.1  # borders
+            H_FROM_FLOOR = H_to_fit / (np.tan(fov_y_rad / 2))
+
+            return {
+                "mode": "top_down",
+                "look_from": (a, H_FROM_FLOOR, b),
+                "look_at": (a, 0.0, b - 0.01),
+                "up_vector": (0, 1, 0),
+            }
+        elif view_mode == "follow":
+            # Third-person camera behind and above robot
+            dir_vec = get_dir_vec(angle)
+
+            # Position camera behind the robot
+            cam_x = x - dir_vec[0] * self.window_follow_distance
+            cam_y = self.window_follow_height
+            cam_z = z - dir_vec[2] * self.window_follow_distance
+
+            # Look at point in front of robot
+            look_at_x = x + dir_vec[0] * 0.5
+            look_at_y = y + 0.1  # Look slightly above ground
+            look_at_z = z + dir_vec[2] * 0.5
+
+            return {
+                "mode": "follow",
+                "look_from": (cam_x, cam_y, cam_z),
+                "look_at": (look_at_x, look_at_y, look_at_z),
+                "up_vector": (0, 1, 0),
+                "pitch": self.window_follow_pitch,
+            }
+        elif view_mode == "free":
+            # Free camera using cam_offset
+            y += 0.8
+            return {
+                "mode": "free",
+                "look_from": (x, y, z),
+                "look_at": (x + dx, y + dy, z + dz),
+                "up_vector": (0, 1, 0),
+            }
+        else:
+            raise ValueError(f"Unknown view mode: {view_mode}")
+
     def get_lane_pos2(self, pos, angle):
         """
         Get the position of the agent relative to the center of the right lane
@@ -1761,12 +1849,14 @@ class Simulator(gym.Env):
         multi_fbo,
         final_fbo,
         img_array,
-        top_down: bool = True,
+        camera_config: dict,
         segment: bool = False,
     ) -> np.ndarray:
         """
         Render an image of the environment into a frame buffer
         Produce a numpy RGB array image as output
+
+        :param camera_config: Dictionary with camera configuration (mode, look_from, look_at, up_vector, etc.)
         """
 
         if not self.graphics:
@@ -1805,59 +1895,28 @@ class Simulator(gym.Env):
         projection = Mat4.perspective_projection(aspect_ratio, z_near=0.04, z_far=100.0, fov=self.cam_fov_y)
         self.mvp.projection.stack[-1] = projection
 
-        # Set modelview matrix
-        # Note: we add a bit of noise to the camera position for data augmentation
-        pos = self.cur_pos
-        angle = self.cur_angle
-        # logger.info('Pos: %s angle %s' % (self.cur_pos, self.cur_angle))
-        if self.domain_rand:
-            pos = pos + self.randomization_settings["camera_noise"]
-
-        x, y, z = pos + self.cam_offset
-        dx, dy, dz = get_dir_vec(angle)
-
+        # Set modelview matrix based on camera configuration
         # Reset view matrix
         self.mvp.view.load_identity()
 
-        if self.draw_bbox:
-            y += 0.8
-            # Apply rotation to view matrix
-            self.mvp.view.rotate(90, 1, 0, 0)
-            look_from = (x, y, z)
-            look_at = (x + dx, y + dy, z + dz)
-            up_vector = (0, 1, 0)
-        elif not top_down:
-            y += self.cam_height
-            # Apply camera rotations
-            self.mvp.view.rotate(self.cam_angle[0], 1, 0, 0)
-            self.mvp.view.rotate(self.cam_angle[1], 0, 1, 0)
-            self.mvp.view.rotate(self.cam_angle[2], 0, 0, 1)
+        # Extract camera parameters from config
+        view_mode = camera_config["mode"]
+        look_from = camera_config["look_from"]
+        look_at = camera_config["look_at"]
+        up_vector = camera_config["up_vector"]
+
+        # Apply mode-specific transformations
+        if view_mode == "robot":
+            # Robot camera view - apply camera rotations
+            cam_angle = camera_config.get("cam_angle", (0, 0, 0))
+            self.mvp.view.rotate(cam_angle[0], 1, 0, 0)
+            self.mvp.view.rotate(cam_angle[1], 0, 1, 0)
+            self.mvp.view.rotate(cam_angle[2], 0, 0, 1)
             self.mvp.view.translate(0, 0, CAMERA_FORWARD_DIST)
-            look_from = (x, y, z)
-            look_at = (x + dx, y + dy, z + dz)
-            up_vector = (0, 1, 0)
-        else:
-            # top_down view
-            look_from = None
-            look_at = None
-            up_vector = None
-
-        if top_down:
-            a = (self.grid_width * self.road_tile_size) / 2
-            b = (self.grid_height * self.road_tile_size) / 2
-            fov_y_deg = self.cam_fov_y
-            fov_y_rad = np.deg2rad(fov_y_deg)
-            H_to_fit = max(a, b) + 0.1  # borders
-
-            H_FROM_FLOOR = H_to_fit / (np.tan(fov_y_rad / 2))
-
-            look_from = (a, H_FROM_FLOOR, b)
-            look_at = (a, 0.0, b - 0.01)
-            up_vector = (0.0, 1.0, 0)
-        else:
-            look_from = (x, y, z)
-            look_at = (x + dx, y + dy, z + dz)
-            up_vector = (0.0, 1.0, 0.0)
+        elif view_mode == "free":
+            # Free camera - apply bbox rotation
+            self.mvp.view.rotate(90, 1, 0, 0)
+        # Other modes (top_down, follow) use look_at matrix directly without extra rotations
 
         # Create look-at view matrix
         # Convert to plain Python floats to avoid numpy scalar contamination
@@ -2004,7 +2063,8 @@ class Simulator(gym.Env):
             # Switch back to main program
             self.main_program.use()
 
-        if top_down:
+        # Draw robot mesh in top-down view to show robot location
+        if view_mode == "top_down":
             self.mvp.model.push()
             self.mvp.model.translate(*self.cur_pos)
             self.mvp.model.scale(1, 1, 1)
@@ -2043,13 +2103,15 @@ class Simulator(gym.Env):
         Render an observation from the point of view of the agent
         """
 
+        # Always use robot camera for observations
+        camera_config = self._compute_window_camera_config("robot")
         observation = self._render_img(
             self.camera_width,
             self.camera_height,
             self.multi_fbo,
             self.final_fbo,
             self.img_array,
-            top_down=False,
+            camera_config=camera_config,
             segment=segment,
         )
 
@@ -2073,7 +2135,18 @@ class Simulator(gym.Env):
                 self.window.close()
             return
 
-        top_down = mode == "top_down"
+        # Determine view mode based on mode parameter and window_view_mode setting
+        if mode == "top_down":
+            view_mode = "top_down"
+        elif mode == "free_cam":
+            view_mode = "free"
+        else:
+            # mode == "human" or "rgb_array"
+            view_mode = self.window_view_mode
+
+        # Get camera configuration for the selected view mode
+        camera_config = self._compute_window_camera_config(view_mode)
+
         # Render the image
         img = self._render_img(
             WINDOW_WIDTH,
@@ -2081,7 +2154,7 @@ class Simulator(gym.Env):
             self.multi_fbo_human,
             self.final_fbo_human,
             self.img_array_human,
-            top_down=top_down,
+            camera_config=camera_config,
             segment=segment,
         )
 

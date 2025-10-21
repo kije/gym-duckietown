@@ -66,6 +66,11 @@ def on_key_press(symbol, modifiers):
     elif symbol == key.ESCAPE:
         env.close()
         sys.exit(0)
+    elif symbol == key.V:
+        modes = ["robot", "top_down", "follow"]
+        current_idx = modes.index(env.unwrapped.window_view_mode)
+        env.unwrapped.window_view_mode = modes[(current_idx + 1) % len(modes)]
+        print(f"Window view mode: {env.unwrapped.window_view_mode}")
 
     # Take a screenshot
     # UNCOMMENT IF NEEDED - Skimage dependency
