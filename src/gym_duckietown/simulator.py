@@ -339,7 +339,8 @@ class Simulator(gym.Env):
         self.window = None
 
         # Invisible window to render into (shadow OpenGL context)
-        self.shadow_window = pyglet.window.Window(width=1, height=1, visible=False)
+        config = gl.Config(double_buffer=False)
+        self.shadow_window = pyglet.window.Window(width=1, height=1, visible=False, config=config)
 
         # Initialize modern OpenGL infrastructure
         from .shaders import ShaderManager, set_uniform_matrix4, set_uniform_matrix3, set_uniform_vector3, set_uniform_bool

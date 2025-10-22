@@ -147,8 +147,10 @@ class DuckiebotEnv(gym.Env):
             return self.img
 
         if self.window is None:
-            context = pyglet.gl.get_current_context()
-            self.window = pyglet.window.Window(width=WINDOW_WIDTH, height=WINDOW_HEIGHT)
+            config = gl.Config(double_buffer=False)
+            self.window = pyglet.window.Window(
+                width=WINDOW_WIDTH, height=WINDOW_HEIGHT, resizable=False, config=config
+            )
 
         self.window.switch_to()
         self.window.dispatch_events()
@@ -158,14 +160,8 @@ class DuckiebotEnv(gym.Env):
 
         self.window.clear()
 
-        # Setup orghogonal projection
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-        gl.glLoadIdentity()
-        gl.glOrtho(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT, 0, 10)
-
         # Draw the image to the rendering window
+        # Note: Pyglet handles 2D projection internally for image blitting
         width = self.img.shape[1]
         height = self.img.shape[0]
         imgData = pyglet.image.ImageData(
