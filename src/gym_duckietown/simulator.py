@@ -207,6 +207,8 @@ class Simulator(gym.Env):
     def __init__(
         self,
         map_name: str = DEFAULT_MAP_NAME,
+        map_data: Optional[Dict[str, Any]] = None,
+        map_dirs: Union[str, Sequence[str]] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         draw_curve: bool = False,
         draw_bbox: bool = False,
@@ -236,7 +238,9 @@ class Simulator(gym.Env):
     ):
         """
 
-        :param map_name:
+        :param map_name: Map name or file path (ignored if map_data provided)
+        :param map_data: Optional dict with map data from MapBuilder.build() (takes precedence over map_name)
+        :param map_dirs: Optional path or sequence of paths pointing to directories to search maps in
         :param max_steps:
         :param draw_curve:
         :param draw_bbox:
@@ -261,6 +265,18 @@ class Simulator(gym.Env):
         :param window_follow_height: Height (meters) above ground for follow camera mode
         :param window_follow_pitch: Downward pitch angle (degrees) for follow camera mode
         """
+        # Register custom map directories if provided
+        if map_dirs is not None:
+            from .map_registry import register_map_dir
+
+            if isinstance(map_dirs, str):
+                # Single directory provided as string
+                register_map_dir(map_dirs)
+            else:
+                # List of directories
+                for map_dir in map_dirs:
+                    register_map_dir(map_dir)
+
         self.enable_leds = enable_leds
         information = get_graphics_information()
         logger.info(
@@ -286,8 +302,17 @@ class Simulator(gym.Env):
         # Full map file path, set in _load_map()
         self.map_file_path = None
 
+        # Map directory for resolving relative custom texture paths
+        self.map_directory = None
+
         # The parsed content of the map_file
         self.map_data = None
+
+        # Custom textures configuration from map file
+        self.custom_textures_config = None
+
+        # Custom curves configuration from map file
+        self.custom_curves_config = None
 
         # Maximum number of steps per episode
         self.max_steps = max_steps
@@ -343,14 +368,20 @@ class Simulator(gym.Env):
         self.shadow_window = pyglet.window.Window(width=1, height=1, visible=False, config=config)
 
         # Initialize modern OpenGL infrastructure
-        from .shaders import ShaderManager, set_uniform_matrix4, set_uniform_matrix3, set_uniform_vector3, set_uniform_bool
+        from .shaders import (
+            ShaderManager,
+            set_uniform_matrix4,
+            set_uniform_matrix3,
+            set_uniform_vector3,
+            set_uniform_bool,
+        )
         from .matrix_stack import get_mvp, reset_mvp
         from pyglet.math import Mat4, Vec3
 
         # Initialize shader system
         self.shader_manager = ShaderManager()
-        self.main_program = self.shader_manager.get_program('main')
-        self.simple_program = self.shader_manager.get_program('simple')
+        self.main_program = self.shader_manager.get_program("main")
+        self.simple_program = self.shader_manager.get_program("simple")
 
         # Initialize matrix stacks
         reset_mvp()
@@ -375,7 +406,16 @@ class Simulator(gym.Env):
         self.accept_start_angle_deg = accept_start_angle_deg
 
         # Load the map
-        self._load_map(map_name)
+        if map_data is not None:
+            # Use provided map data (from MapBuilder)
+            self.map_data = map_data
+            self.map_name = map_data.get("map_name", "custom")
+            self.map_file_path = None
+            self.map_directory = os.getcwd()  # For relative texture paths
+            self._interpret_map(self.map_data)
+        else:
+            # Load from file or registry
+            self._load_map(map_name)
 
         # Distortion params, if so, load the library, only if not bbox mode
         self.distortion = distortion and not draw_bbox
@@ -539,16 +579,16 @@ class Simulator(gym.Env):
             # Quad vertices: i, i+1, i+2, i+3
             # Triangle 1: i, i+1, i+2
             # Triangle 2: i, i+2, i+3
-            indices.extend([i, i+1, i+2, i, i+2, i+3])
+            indices.extend([i, i + 1, i + 2, i, i + 2, i + 3])
 
         self.road_vlist = self.main_program.vertex_list_indexed(
             total,
             gl.GL_TRIANGLES,
             indices,
-            position=('f', vertices),
-            tex_coords=('f', textures),
-            normal=('f', normals),  # 'normal' not 'normals'
-            color=('Bn', colors)  # 'color' not 'colors'
+            position=("f", vertices),
+            tex_coords=("f", textures),
+            normal=("f", normals),  # 'normal' not 'normals'
+            color=("Bn", colors),  # 'color' not 'colors'
         )
         logger.info("done")
         # Create the vertex list for the ground quad
@@ -582,11 +622,75 @@ class Simulator(gym.Env):
             4,
             gl.GL_TRIANGLES,
             ground_indices,
-            position=('f', verts),
-            normal=('f', normals),  # 'normal' not 'normals'
-            tex_coords=('f', ground_tex_coords),
-            color=('Bn', colors)  # 'color' not 'colors'
+            position=("f", verts),
+            normal=("f", normals),  # 'normal' not 'normals'
+            tex_coords=("f", ground_tex_coords),
+            color=("Bn", colors),  # 'color' not 'colors'
         )
+
+    def _get_tile_texture(self, tile: dict, i: int, j: int, rng) -> Texture:
+        """
+        Get texture for a tile, checking custom textures first, then falling back to defaults.
+
+        Three-tier fallback system:
+        1. Tile-specific override: custom_textures.tile_overrides["[i,j]"]
+        2. Global override by kind: custom_textures.global[kind]
+        3. Default texture: tiles-processed/{style}/{kind}/texture
+
+        Args:
+            tile: Tile dict with 'kind' and 'angle' keys
+            i, j: Tile coordinates in grid
+            rng: Random number generator for domain randomization
+
+        Returns:
+            Texture object (custom or default)
+        """
+        kind = tile["kind"]
+
+        # Three-tier fallback: tile override → global override → default
+        custom_texture_path = None
+
+        if self.custom_textures_config:
+            # Check tile-specific override first (highest priority)
+            tile_key = f"[{i},{j}]"
+            if "tile_overrides" in self.custom_textures_config:
+                custom_texture_path = self.custom_textures_config["tile_overrides"].get(tile_key)
+
+            # Check global override for this tile kind (if no tile-specific override)
+            if not custom_texture_path and "global" in self.custom_textures_config:
+                custom_texture_path = self.custom_textures_config["global"].get(kind)
+
+        # If custom texture specified, try to load it
+        if custom_texture_path:
+            try:
+                # Resolve relative paths (relative to map file directory)
+                if not os.path.isabs(custom_texture_path):
+                    custom_texture_path = os.path.join(self.map_directory, custom_texture_path)
+
+                # Security: Ensure resolved path stays within map directory
+                # This prevents path traversal attacks like "../../../etc/passwd"
+                custom_texture_abs = os.path.abspath(custom_texture_path)
+                map_dir_abs = os.path.abspath(self.map_directory)
+                if not custom_texture_abs.startswith(map_dir_abs + os.sep):
+                    logger.error(
+                        f"Security: Custom texture path escapes map directory. "
+                        f"Path: {custom_texture_path}, Map dir: {self.map_directory}"
+                    )
+                    # Fallback to default texture for security
+                else:
+                    # Load custom texture (security check passed)
+                    if os.path.exists(custom_texture_abs):
+                        t = load_texture(custom_texture_abs, segment=False, segment_into_color=False)
+                        return Texture(t, tex_name=f"{kind}_custom", rng=rng)
+                    else:
+                        logger.warning(f"Custom texture not found: {custom_texture_abs}, using default")
+            except Exception as e:
+                logger.warning(f"Failed to load custom texture {custom_texture_path}: {e}, using default")
+
+        # Fallback to default texture from duckietown-world
+        fn = get_texture_file(f"tiles-processed/{self.style}/{kind}/texture")[0]
+        t = load_texture(fn, segment=False, segment_into_color=False)
+        return Texture(t, tex_name=kind, rng=rng)
 
     def reset(self, segment: bool = False):
         """
@@ -689,21 +793,22 @@ class Simulator(gym.Env):
         self.tri_vlist = self.main_program.vertex_list(
             3 * numTris,
             gl.GL_TRIANGLES,
-            position=('f', verts),
-            normal=('f', normals),  # Required by shader
-            tex_coords=('f', texcoords),  # Required by shader
-            color=('f', colors)  # 'color' not 'colors' - Now RGBA float
+            position=("f", verts),
+            normal=("f", normals),  # Required by shader
+            tex_coords=("f", texcoords),  # Required by shader
+            color=("f", colors),  # 'color' not 'colors' - Now RGBA float
         )
 
         # Randomize tile parameters
         for tile in self.grid:
+            # Skip empty tiles (None values in grid)
+            if tile is None:
+                continue
+
             rng = self.np_random if self.domain_rand else None
 
-            kind = tile["kind"]
-            fn = get_texture_file(f"tiles-processed/{self.style}/{kind}/texture")[0]
-            # ft = get_fancy_textures(self.style, texture_name)
-            t = load_texture(fn, segment=False, segment_into_color=False)
-            tt = Texture(t, tex_name=kind, rng=rng)
+            i, j = tile["coords"]
+            tt = self._get_tile_texture(tile, i, j, rng)
             tile["texture"] = tt
 
             # Random tile color multiplier
@@ -829,24 +934,48 @@ class Simulator(gym.Env):
 
     def _load_map(self, map_name: str):
         """
-        Load the map layout from a YAML file
+        Load the map layout from a YAML file.
+
+        Supports three loading methods:
+        1. Direct file path: /absolute/path/to/map.yaml
+        2. Custom map name: Resolved via MapRegistry if registered
+        3. Built-in map name: Loaded from duckietown-world resources
+
+        Args:
+            map_name: Either a resource name (e.g., "small_loop") or a full file path
         """
 
-        # Store the map name
+        # Check if map_name is a file path or a resource name
         if os.path.exists(map_name) and os.path.isfile(map_name):
-            # if env is loaded using gym's register function, we need to extract the map name from the complete url
-            map_name = os.path.basename(map_name)
-            assert map_name.endswith(".yaml")
-            map_name = ".".join(map_name.split(".")[:-1])
-        self.map_name = map_name
+            # Direct file path provided
+            self.map_file_path = os.path.abspath(map_name)
+            # Extract map name from filename
+            map_basename = os.path.basename(map_name)
+            assert map_basename.endswith(".yaml"), f"Map file must be a .yaml file: {map_basename}"
+            self.map_name = ".".join(map_basename.split(".")[:-1])
+        else:
+            # Resource name provided (e.g., "small_loop")
+            # Try registry first for custom maps
+            from .map_registry import resolve_map
 
-        # Get the full map file path
-        self.map_file_path = get_resource_path(f"{map_name}.yaml")
+            resolved_path = resolve_map(map_name)
+            if resolved_path:
+                # Found in custom registry
+                self.map_file_path = str(resolved_path)
+                self.map_name = map_name
+                logger.debug(f"Resolved '{map_name}' to custom map: {self.map_file_path}")
+            else:
+                # Fall back to duckietown-world resources
+                self.map_name = map_name
+                self.map_file_path = get_resource_path(f"{map_name}.yaml")
 
         logger.debug(f'loading map file "{self.map_file_path}"')
 
         with open(self.map_file_path, "r") as f:
             self.map_data = yaml.load(f, Loader=yaml.Loader)
+
+        # Store map directory for relative path resolution
+        self.map_directory = os.path.dirname(self.map_file_path)
 
         self._interpret_map(self.map_data)
 
@@ -857,6 +986,47 @@ class Simulator(gym.Env):
                 raise InvalidMapException(msg)
             self.road_tile_size = map_data["tile_size"]
             self._init_vlists()
+
+            # Extract and validate custom textures configuration if present
+            self.custom_textures_config = map_data.get("custom_textures", None)
+            if self.custom_textures_config:
+                try:
+                    from .map_schema import validate_custom_textures
+
+                    # Pass map_file_path for better error context
+                    is_valid, errors, warnings = validate_custom_textures(
+                        self.custom_textures_config, self.map_file_path
+                    )
+                    if not is_valid:
+                        logger.warning(f"Custom textures validation failed: {errors}")
+                        self.custom_textures_config = None  # Fallback to defaults
+                    if warnings:
+                        for warning in warnings:
+                            logger.warning(f"Custom texture warning: {warning}")
+                except ImportError:
+                    logger.warning("map_schema module not available, custom textures validation skipped")
+                except (TypeError, ValueError, KeyError) as e:
+                    logger.warning(f"Error validating custom textures: {e}, using defaults")
+                    self.custom_textures_config = None
+
+            # Extract and validate custom curves configuration if present
+            self.custom_curves_config = map_data.get("custom_curves", None)
+            if self.custom_curves_config:
+                try:
+                    from .map_schema import validate_custom_curves
+
+                    is_valid, errors, warnings = validate_custom_curves(self.custom_curves_config)
+                    if not is_valid:
+                        logger.warning(f"Custom curves validation failed: {errors}")
+                        self.custom_curves_config = None  # Fallback to defaults
+                    if warnings:
+                        for warning in warnings:
+                            logger.warning(f"Custom curve warning: {warning}")
+                except ImportError:
+                    logger.warning("map_schema module not available, custom curves validation skipped")
+                except (TypeError, ValueError, KeyError) as e:
+                    logger.warning(f"Error validating custom curves: {e}, using defaults")
+                    self.custom_curves_config = None
 
             tiles = map_data["tiles"]
             assert len(tiles) > 0
@@ -1213,15 +1383,99 @@ class Simulator(gym.Env):
 
         return int(i), int(j)
 
+    def _parse_custom_curve(self, curve_def: dict, i: int, j: int, angle: int) -> Optional[np.ndarray]:
+        """
+        Parse custom Bézier curve definition and transform to world coordinates.
+
+        Custom Curve Coordinate System:
+        - Control points specified in tile-local normalized space [-0.5, 0.5]
+        - Origin at tile center
+        - X-axis: left-to-right (west-to-east)
+        - Y-axis: up (always 0 for ground-level)
+        - Z-axis: bottom-to-top (south-to-north)
+        - Example: point [-0.2, 0, -0.5] is 20% left of center, at south edge
+
+        Transformation order:
+        1. Scale by tile_size (0.585m typically)
+        2. Rotate by tile orientation (angle * 90 degrees)
+        3. Translate to world position (tile grid coordinates)
+
+        Args:
+            curve_def: Dict with 'curves' key containing list of curve definitions
+            i: Tile X coordinate in grid
+            j: Tile Z coordinate in grid
+            angle: Tile rotation angle (0=S, 1=E, 2=N, 3=W)
+
+        Returns:
+            np.ndarray: Transformed curve control points [num_curves, 4, 3] or None on error
+        """
+        try:
+            curves_list = curve_def.get("curves", [])
+            if not curves_list:
+                logger.warning(f"Custom curve at [{i},{j}] has no curves defined")
+                return None
+
+            # Parse control points from each curve
+            all_curves = []
+            for curve_idx, curve in enumerate(curves_list):
+                control_points = curve.get("control_points", [])
+                if not control_points:
+                    logger.warning(f"Custom curve [{i},{j}][{curve_idx}] missing control_points")
+                    return None
+
+                # Convert to numpy array
+                pts_array = np.array(control_points, dtype=np.float32)
+
+                # Validate shape
+                if pts_array.shape != (4, 3):
+                    logger.warning(
+                        f"Invalid curve format at [{i},{j}][{curve_idx}]: "
+                        f"expected (4,3), got {pts_array.shape}"
+                    )
+                    return None
+
+                all_curves.append(pts_array)
+
+            pts = np.array(all_curves)
+
+            # Transform: Scale → Rotate → Translate
+            # 1. Scale by tile size (control points are in normalized [-0.5, 0.5] range)
+            pts = pts * self.road_tile_size
+
+            # 2. Rotate based on tile orientation
+            rot = gen_rot_matrix(np.array([0, 1, 0]), angle * math.pi / 2)
+            pts = np.matmul(pts, rot)
+
+            # 3. Translate to tile center position
+            t = np.array([(i + 0.5) * self.road_tile_size, 0, (j + 0.5) * self.road_tile_size])
+            pts += t
+
+            return pts
+
+        except Exception as e:
+            logger.warning(f"Error parsing custom curve at [{i},{j}]: {e}")
+            return None
+
     def _get_curve(self, i, j):
         """
-        Get the Bezier curve control points for a given tile
+        Get the Bezier curve control points for a given tile.
+        Checks for custom curve definition first, then falls back to hardcoded curves.
         """
         tile = self._get_tile(i, j)
         assert tile is not None
 
         kind = tile["kind"]
         angle = tile["angle"]
+
+        # Check for custom curve definition
+        if self.custom_curves_config:
+            tile_key = f"[{i},{j}]"
+            if tile_key in self.custom_curves_config:
+                curve_def = self.custom_curves_config[tile_key]
+                custom_pts = self._parse_custom_curve(curve_def, i, j, angle)
+                if custom_pts is not None:
+                    return custom_pts
+                # If parsing failed, fall through to default curves
 
         # Each tile will have a unique set of control points,
         # Corresponding to each of its possible turns
@@ -1924,16 +2178,16 @@ class Simulator(gym.Env):
         view_matrix = Mat4.look_at(
             Vec3(float(look_from[0]), float(look_from[1]), float(look_from[2])),
             Vec3(float(look_at[0]), float(look_at[1]), float(look_at[2])),
-            Vec3(float(up_vector[0]), float(up_vector[1]), float(up_vector[2]))
+            Vec3(float(up_vector[0]), float(up_vector[1]), float(up_vector[2])),
         )
         self.mvp.view.stack[-1] = view_matrix
 
         # Use main shader program for 3D rendering
         self.main_program.use()
-        set_uniform_matrix4(self.main_program, 'projection', self.mvp.projection.get_matrix_array())
-        set_uniform_matrix4(self.main_program, 'view', self.mvp.view.get_matrix_array())
-        set_uniform_vector3(self.main_program, 'light_dir', (0, 1, 0.5))  # Light from above-front
-        set_uniform_bool(self.main_program, 'use_texture', False)  # Will enable per-object
+        set_uniform_matrix4(self.main_program, "projection", self.mvp.projection.get_matrix_array())
+        set_uniform_matrix4(self.main_program, "view", self.mvp.view.get_matrix_array())
+        set_uniform_vector3(self.main_program, "light_dir", (0, 1, 0.5))  # Light from above-front
+        set_uniform_bool(self.main_program, "use_texture", False)  # Will enable per-object
 
         # Draw the ground quad (no texture - already disabled above)
         # Reset model matrix
@@ -1941,9 +2195,9 @@ class Simulator(gym.Env):
         self.mvp.model.scale(50, 0.01, 50)
         # Calculate normal matrix (inverse transpose of model matrix)
         model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
-        normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
-        set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
-        set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
+        normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype("float32")
+        set_uniform_matrix3(self.main_program, "normal_matrix", normal_matrix)
+        set_uniform_matrix4(self.main_program, "model", self.mvp.model.get_matrix_array())
         self.ground_vlist.draw(gl.GL_TRIANGLES)
         self.mvp.model.load_identity()
 
@@ -1953,14 +2207,14 @@ class Simulator(gym.Env):
             self.mvp.model.translate(0.0, 0.1, 0.0)
             # Calculate normal matrix
             model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
-            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
-            set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
-            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
+            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype("float32")
+            set_uniform_matrix3(self.main_program, "normal_matrix", normal_matrix)
+            set_uniform_matrix4(self.main_program, "model", self.mvp.model.get_matrix_array())
             self.tri_vlist.draw(gl.GL_TRIANGLES)
             self.mvp.model.pop()
 
         # Draw the road quads (with texture)
-        set_uniform_bool(self.main_program, 'use_texture', True)
+        set_uniform_bool(self.main_program, "use_texture", True)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
 
@@ -1996,12 +2250,15 @@ class Simulator(gym.Env):
             # Bind the appropriate texture
             texture.bind(segment)
 
+            # Re-bind shader program after texture binding (Pyglet 2.0 compatibility)
+            self.main_program.use()
+
             # Update shader uniforms (including normal matrix)
             model_mat = self.mvp.model.get_matrix_array().reshape(4, 4)
-            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype('float32')
-            set_uniform_matrix3(self.main_program, 'normal_matrix', normal_matrix)
-            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
-            set_uniform_bool(self.main_program, 'use_texture', True)
+            normal_matrix = np.linalg.inv(model_mat[:3, :3]).T.flatten().astype("float32")
+            set_uniform_matrix3(self.main_program, "normal_matrix", normal_matrix)
+            set_uniform_matrix4(self.main_program, "model", self.mvp.model.get_matrix_array())
+            set_uniform_bool(self.main_program, "use_texture", True)
 
             self.road_vlist.draw(gl.GL_TRIANGLES)
             # gl.glDisable(gl.GL_BLEND)
@@ -2029,32 +2286,45 @@ class Simulator(gym.Env):
 
         # For each object
         for obj in self.objects:
-            obj.render(draw_bbox=self.draw_bbox, segment=segment, enable_leds=self.enable_leds, shader_program=self.main_program)
+            obj.render(
+                draw_bbox=self.draw_bbox,
+                segment=segment,
+                enable_leds=self.enable_leds,
+                shader_program=self.main_program,
+            )
 
         # Draw the agent's own bounding box
         if self.draw_bbox:
             corners = get_agent_corners(pos, angle)
             # Create a temporary vertex list for the bounding box
             bbox_verts = [
-                corners[0, 0], 0.01, corners[0, 1],
-                corners[1, 0], 0.01, corners[1, 1],
-                corners[2, 0], 0.01, corners[2, 1],
-                corners[3, 0], 0.01, corners[3, 1],
+                corners[0, 0],
+                0.01,
+                corners[0, 1],
+                corners[1, 0],
+                0.01,
+                corners[1, 1],
+                corners[2, 0],
+                0.01,
+                corners[2, 1],
+                corners[3, 0],
+                0.01,
+                corners[3, 1],
             ]
             bbox_colors = [255, 0, 0, 255] * 4  # Red color
             bbox_vlist = self.simple_program.vertex_list(
                 4,
                 gl.GL_LINE_LOOP,
-                position=('f', bbox_verts),
-                color=('Bn', bbox_colors)  # 'color' not 'colors'
+                position=("f", bbox_verts),
+                color=("Bn", bbox_colors),  # 'color' not 'colors'
             )
 
             # Use simple shader for unlit line drawing
             self.simple_program.use()
             self.mvp.model.load_identity()
-            set_uniform_matrix4(self.simple_program, 'projection', self.mvp.projection.get_matrix_array())
-            set_uniform_matrix4(self.simple_program, 'view', self.mvp.view.get_matrix_array())
-            set_uniform_matrix4(self.simple_program, 'model', self.mvp.model.get_matrix_array())
+            set_uniform_matrix4(self.simple_program, "projection", self.mvp.projection.get_matrix_array())
+            set_uniform_matrix4(self.simple_program, "view", self.mvp.view.get_matrix_array())
+            set_uniform_matrix4(self.simple_program, "model", self.mvp.model.get_matrix_array())
 
             # Draw bounding box
             gl.glLineWidth(2.0)
@@ -2070,7 +2340,7 @@ class Simulator(gym.Env):
             self.mvp.model.translate(*self.cur_pos)
             self.mvp.model.scale(1, 1, 1)
             self.mvp.model.rotate(self.cur_angle * 180 / np.pi, 0, 1, 0)
-            set_uniform_matrix4(self.main_program, 'model', self.mvp.model.get_matrix_array())
+            set_uniform_matrix4(self.main_program, "model", self.mvp.model.get_matrix_array())
             # glColor3f(*self.color)
             self.mesh.render(shader_program=self.main_program)
             self.mvp.model.pop()

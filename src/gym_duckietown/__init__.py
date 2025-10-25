@@ -24,6 +24,19 @@ from gymnasium.envs.registration import register
 
 from .utils import get_subdir_path
 
+# Import map registry functions
+from .map_registry import (
+    register_map_dir,
+    unregister_map_dir,
+    list_map_dirs,
+    list_custom_maps,
+    resolve_map,
+    clear_map_registry,
+)
+
+# Import map builder
+from .map_builder import MapBuilder
+
 
 def reg_map_env(map_name0: str, map_file: str):
     gym_id = f"Duckietown-{map_name0}-v0"

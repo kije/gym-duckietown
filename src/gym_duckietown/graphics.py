@@ -368,6 +368,6 @@ def bezier_draw(cps, n=20, red=False, shader_program=None):
         colors=('Bn', colors)
     )
 
-    gl.glLineWidth(2.0)
+    gl.glLineWidth(1.0)
     vlist.draw(gl.GL_LINE_STRIP)
     gl.glLineWidth(1.0)

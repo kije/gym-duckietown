@@ -13,14 +13,19 @@ import gymnasium as gym
 import numpy as np
 import pyglet
 from pyglet.window import key
+from os import path
 
 from gym_duckietown.envs import DuckietownEnv
+from gym_duckietown import logger
+
+logger.setLevel(logger.WARN)
 
 # from experiments.utils import save_img
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--env-name", default=None)
 parser.add_argument("--map-name", default="udem1")
+parser.add_argument("--map-dirs", default=None)
 parser.add_argument("--distortion", default=False, action="store_true")
 parser.add_argument("--camera_rand", default=False, action="store_true")
 parser.add_argument("--draw-curve", action="store_true", help="draw the lane following curve")
@@ -35,6 +40,7 @@ if args.env_name and args.env_name.find("Duckietown") != -1:
     env = DuckietownEnv(
         seed=args.seed,
         map_name=args.map_name,
+        map_dirs=args.map_dirs,
         draw_curve=args.draw_curve,
         draw_bbox=args.draw_bbox,
         domain_rand=args.domain_rand,
