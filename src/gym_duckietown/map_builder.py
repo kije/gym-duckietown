@@ -459,7 +459,10 @@ class MapBuilder:
             map_data["start_tile"] = list(self._start_tile)
 
         if self._start_pose:
-            map_data["start_pose"] = self._start_pose
+            # Convert [x, y, angle] to [[x, 0, z], angle] format expected by simulator
+            # In 2D: x is horizontal, y is vertical (forward)
+            # In 3D: x is horizontal, y is height (0), z is forward
+            map_data["start_pose"] = [[self._start_pose[0], 0, self._start_pose[1]], self._start_pose[2]]
 
         if self._custom_textures:
             map_data["custom_textures"] = copy.deepcopy(self._custom_textures)

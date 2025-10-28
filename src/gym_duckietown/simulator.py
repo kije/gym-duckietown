@@ -232,6 +232,7 @@ class Simulator(gym.Env):
         style: str = "photos",
         enable_leds: bool = False,
         window_view_mode: str = "robot",
+        window_top_down_fov: float = 50.0,
         window_follow_distance: float = 2.0,
         window_follow_height: float = 1.5,
         window_follow_pitch: float = 30.0,
@@ -331,6 +332,7 @@ class Simulator(gym.Env):
         self.window_follow_distance = window_follow_distance
         self.window_follow_height = window_follow_height
         self.window_follow_pitch = window_follow_pitch
+        self.window_top_down_fov = window_top_down_fov
 
         self.randomizer = Randomizer()
 
@@ -1717,7 +1719,7 @@ class Simulator(gym.Env):
             # Overhead view
             a = (self.grid_width * self.road_tile_size) / 2
             b = (self.grid_height * self.road_tile_size) / 2
-            fov_y_deg = self.cam_fov_y
+            fov_y_deg = self.window_top_down_fov
             fov_y_rad = np.deg2rad(fov_y_deg)
             H_to_fit = max(a, b) + 0.1  # borders
             H_FROM_FLOOR = H_to_fit / (np.tan(fov_y_rad / 2))
