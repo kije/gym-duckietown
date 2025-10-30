@@ -1,5 +1,5 @@
 pyglet>=2.0.0
-gymnasium>=1.2.1
+gymnasium>=1.1.0
 numpy>=1.21.0,<1.24.0,<2.0
 
 pyzmq>=16.0.0

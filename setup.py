@@ -24,7 +24,7 @@ version = get_version(filename="src/gym_duckietown/__init__.py")
 line = "daffy"
 
 install_requires = [
-    "gymnasium>=1.2.1",
+    "gymnasium>=1.1.0",
     "numpy>=1.21.0,<1.24.0,<2.0",  # duckietown_world requires NumPy 1.x
     "scipy<1.16",
     "pyglet>=2.0.0",
