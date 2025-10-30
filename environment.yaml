@@ -3,12 +3,12 @@ channels:
     - pytorch
     - defaults
 dependencies:
-    - python=3.11
+    - python=3.8
     - pytorch
     - torchvision
     - pyzmq
     - numpy>=1.21.0,<1.24.0,<2.0
-    - scipy<1.16
+    - scipy>=1.5.0,<1.11.0
     - pyyaml
     - pip:
         - gymnasium

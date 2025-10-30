@@ -8,4 +8,4 @@ pyyaml>=3.11
 
 carnivalmirror==0.6.2
 pipdeptree
-scipy<1.16
+scipy>=1.5.0,<1.11.0
