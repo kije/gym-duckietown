@@ -455,6 +455,9 @@ class Simulator(gym.Env):
         self.wheelVels = np.array([0, 0])
 
     def _init_vlists(self):
+        # Activate OpenGL context before creating VAOs
+        # Required for headless/Mesa environments where context must be explicit
+        self.shadow_window.switch_to()
 
         ns = 8
         assert ns >= 2
@@ -791,6 +794,10 @@ class Simulator(gym.Env):
             normals += [0.0, 1.0, 0.0]  # Upward facing normals
             texcoords += [0.0, 0.0]  # Dummy texture coordinates
             colors += [c[0], c[1], c[2], 1.0]  # Add alpha=1.0
+
+        # Activate OpenGL context before creating VAOs
+        # Required for headless/Mesa environments where context must be explicit
+        self.shadow_window.switch_to()
 
         self.tri_vlist = self.main_program.vertex_list(
             3 * numTris,
