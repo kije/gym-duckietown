@@ -232,7 +232,7 @@ class Simulator(gym.Env):
         style: str = "photos",
         enable_leds: bool = False,
         window_view_mode: str = "robot",
-        window_top_down_fov: float = 50.0,
+        window_top_down_fov: float = 100.0,
         window_follow_distance: float = 2.0,
         window_follow_height: float = 1.5,
         window_follow_pitch: float = 30.0,
